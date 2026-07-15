@@ -556,7 +556,7 @@ export default function PatternPrototype() {
   const [ease, setEase] = useState(5);
   const [seam, setSeam] = useState(1);
   const [printSeam, setPrintSeam] = useState(true);
-  const [exportFormat, setExportFormat] = useState("pdf");
+  const [exportFormat, setExportFormat] = useState("pdf-a4");
   const [labelMode, setLabelMode] = useState("points");
   const [showPatternOnly, setShowPatternOnly] = useState(false);
   const [separatePieces, setSeparatePieces] = useState(false);
@@ -858,7 +858,7 @@ export default function PatternPrototype() {
       body: JSON.stringify({
         visitorId,
         pattern: "世界经典服装设计与纸样·女装上衣原型",
-        format: exportFormat,
+        format: exportFormat.startsWith("pdf-") ? "pdf" : exportFormat,
       }),
       keepalive: true,
     }).catch(() => {});
@@ -896,13 +896,24 @@ export default function PatternPrototype() {
 
   const exportActualSizePdf = async () => {
     const { createPatternPdf, downloadPdfBlob } = await import("./src/pdf-export.mjs");
-    const svgs = document.querySelectorAll(".pp-workspace .pp-pattern-svg");
-    if (svgs.length < 2) throw new Error("Unable to find both pattern canvases");
+    const isA4Pdf = exportFormat === "pdf-a4";
+    const bodyPieces = isA4Pdf || separatePieces
+      ? [
+          { label: "后片", outline: backPieceOutline, seam: printSeam ? backPieceSeam : [] },
+          { label: "前片", outline: frontPieceOutline, seam: printSeam ? frontPieceSeam : [] },
+        ]
+      : [{
+          label: "衣身",
+          outline: bodyOutline,
+          seam: printSeam ? bodySeam : [],
+          lines: [[s2.SIDE_BUST, s2.MODIFIED_SIDE_WAIST]],
+        }];
     const result = await createPatternPdf({
-      bodySvg: svgs[0],
-      sleeveSvg: svgs[1],
-      bodySize: { widthCm: svgW / scale, heightCm: svgH / scale },
-      sleeveSize: { widthCm: svgW / scale, heightCm: sleeveSvgH / scale },
+      mode: exportFormat === "pdf-single" ? "single" : "a4",
+      pieces: [
+        ...bodyPieces,
+        { label: "袖片", outline: sleeveOutline, seam: printSeam ? sleeveSeam : [] },
+      ],
     });
     downloadPdfBlob(result.blob, `pattern-${new Date().toISOString().slice(0, 10)}.pdf`);
   };
@@ -910,7 +921,7 @@ export default function PatternPrototype() {
   const handleExport = async () => {
     if (isExportingPdf) return;
     recordDownload();
-    if (exportFormat === "pdf") {
+    if (exportFormat.startsWith("pdf-")) {
       setIsExportingPdf(true);
       try {
         await exportActualSizePdf();
@@ -1183,7 +1194,8 @@ export default function PatternPrototype() {
             <div className="pp-row">
               <label><span>导出文件格式</span></label>
               <select className="pp-select" value={exportFormat} onChange={e => setExportFormat(e.target.value)}>
-                <option value="pdf">PDF（打印 / 另存为 PDF）</option>
+                <option value="pdf-a4">PDF（A4 分页 1:1）</option>
+                <option value="pdf-single">PDF（完整单页 1:1）</option>
                 <option value="svg">SVG（矢量版型）</option>
                 <option value="dxf">DXF（服装 CAD 通用）</option>
                 <option value="plt">PLT / HPGL（绘图仪）</option>
@@ -1195,7 +1207,7 @@ export default function PatternPrototype() {
             </div>
             <CenteredParameter label="缝份宽度" value={seam} onChange={setSeam} radius={1} step={0.1} minimum={0} decimals={1} unit="cm" disabled={!printSeam} />
             <button type="button" className="pp-export-btn" onClick={handleExport} disabled={isExportingPdf}>{isExportingPdf ? "正在生成 PDF…" : "导出打印文件"}</button>
-            <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45, color: "var(--muted)" }}>衣身与袖子统一使用 1:1 厘米比例；PDF 前两页为完整实际尺寸画面，后续为带 1 cm 重叠区的 A4 拼接页。</div>
+            <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45, color: "var(--muted)" }}>PDF 始终仅显示原型；A4 分页强制分开前后片，其他格式遵循“分开前后片”开关。缝份由上方开关控制。打印时请选择“实际大小 / 100%”，不要使用“适合页面”。</div>
           </div>
 
           <div className="pp-card">

@@ -1,63 +1,62 @@
 import { jsPDF } from "jspdf";
-import { createTilePlan } from "./print-layout.mjs";
+import { PAGE_MARGIN_CM, RULER_ZONE_HEIGHT_CM, createTilePlan } from "./print-layout.mjs";
 
-const RASTER_DPI = 150;
+const RASTER_DPI = 180;
+const INK = "#20293f";
+const SEAM = "#b8823a";
+const TITLE = "世界经典服装设计与纸样·女装上衣原型";
+const PIECE_GAP_CM = 3;
+const STROKE_SAFETY_CM = 0.1;
 
-const PDF_COLORS = {
-  "--paper": "#eae5d6",
-  "--grid": "#d7cfb8",
-  "--ink": "#20293f",
-  "--construction": "#3d6f96",
-  "--dart": "#a8423f",
-  "--seam": "#b8823a",
-  "--muted": "#7a7568",
-};
-
-function orientationFor(width, height) {
-  return width > height ? "landscape" : "portrait";
+function boundsFor(piece) {
+  const points = [piece.outline, piece.seam || [], ...(piece.lines || [])].flat();
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
+  return {
+    minX: Math.min(...xs), minY: Math.min(...ys),
+    maxX: Math.max(...xs), maxY: Math.max(...ys),
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+  };
 }
 
-function prepareSvg(source, suffix, widthCm, heightCm) {
-  const clone = source.cloneNode(true);
-  const renamedIds = new Map();
-  clone.querySelectorAll("[id]").forEach(element => {
-    const oldId = element.id;
-    const newId = `${oldId}-${suffix}`;
-    renamedIds.set(oldId, newId);
-    element.id = newId;
-  });
-  clone.querySelectorAll("*").forEach(element => {
-    for (const attribute of Array.from(element.attributes)) {
-      let value = attribute.value;
-      renamedIds.forEach((newId, oldId) => { value = value.replaceAll(`#${oldId}`, `#${newId}`); });
-      Object.entries(PDF_COLORS).forEach(([variable, color]) => { value = value.replaceAll(`var(${variable})`, color); });
-      if (value !== attribute.value) element.setAttribute(attribute.name, value);
-    }
-  });
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("width", `${widthCm}cm`);
-  clone.setAttribute("height", `${heightCm}cm`);
-  clone.style.width = `${widthCm}cm`;
-  clone.style.height = `${heightCm}cm`;
-  clone.style.maxWidth = "none";
-  return clone;
+function escapeXml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]);
 }
 
-async function renderSvgToPng(svg, widthCm, heightCm) {
+function polygon(points, dx, dy, seam = false) {
+  if (!points?.length) return "";
+  const data = points.map(point => `${(point.x + dx).toFixed(4)},${(point.y + dy).toFixed(4)}`).join(" ");
+  return `<polygon points="${data}" fill="none" stroke="${seam ? SEAM : INK}" stroke-width="${seam ? 0.12 : 0.16}"${seam ? ' stroke-dasharray="0.6 0.3"' : ""}/>`;
+}
+
+function openLines(lines, dx, dy) {
+  return (lines || []).map(points => {
+    const data = points.map(point => `${(point.x + dx).toFixed(4)},${(point.y + dy).toFixed(4)}`).join(" ");
+    return `<polyline points="${data}" fill="none" stroke="${INK}" stroke-width="0.16"/>`;
+  }).join("");
+}
+
+function svgDocument(width, height, content) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}cm" height="${height}cm" viewBox="0 0 ${width} ${height}">
+    <rect width="100%" height="100%" fill="#fff"/>
+    <g font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif" fill="${INK}">${content}</g>
+  </svg>`;
+}
+
+async function renderSvgPage(source, widthCm, heightCm) {
   const pixelsPerCm = RASTER_DPI / 2.54;
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(widthCm * pixelsPerCm);
   canvas.height = Math.ceil(heightCm * pixelsPerCm);
   const context = canvas.getContext("2d");
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-
-  const source = new XMLSerializer().serializeToString(svg);
   const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml;charset=utf-8" }));
   const image = new Image();
   try {
     image.src = url;
     await image.decode();
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/png");
   } finally {
@@ -67,51 +66,92 @@ async function renderSvgToPng(svg, widthCm, heightCm) {
   }
 }
 
-export async function createPatternPdf({ bodySvg, sleeveSvg, bodySize, sleeveSize }) {
-  const bodyPlan = createTilePlan(bodySize.widthCm, bodySize.heightCm);
-  const sleevePlan = createTilePlan(sleeveSize.widthCm, sleeveSize.heightCm);
-  const body = prepareSvg(bodySvg, "body-pdf", bodySize.widthCm, bodySize.heightCm);
-  const sleeve = prepareSvg(sleeveSvg, "sleeve-pdf", sleeveSize.widthCm, sleeveSize.heightCm);
-  const bodyPng = await renderSvgToPng(body, bodySize.widthCm, bodySize.heightCm);
-  const sleevePng = await renderSvgToPng(sleeve, sleeveSize.widthCm, sleeveSize.heightCm);
+function footerSvg(plan, pieceLabel) {
+  const zoneTop = plan.pageHeight - PAGE_MARGIN_CM - RULER_ZONE_HEIGHT_CM;
+  const barX = PAGE_MARGIN_CM;
+  const barY = zoneTop + 0.55;
+  const divisions = Array.from({ length: 4 }, (_, index) => {
+    const x = barX + index + 1;
+    return `<line x1="${x}" y1="${barY}" x2="${x}" y2="${barY + 1}" stroke="${INK}" stroke-width="0.04"/>`;
+  }).join("");
+  return `
+    <rect x="${PAGE_MARGIN_CM}" y="${PAGE_MARGIN_CM}" width="${plan.pageWidth - PAGE_MARGIN_CM * 2}" height="${plan.pageHeight - PAGE_MARGIN_CM * 2}" fill="none" stroke="${INK}" stroke-width="0.03"/>
+    <line x1="${PAGE_MARGIN_CM}" y1="${zoneTop}" x2="${plan.pageWidth - PAGE_MARGIN_CM}" y2="${zoneTop}" stroke="#c8c8c8" stroke-width="0.03"/>
+    <text x="${barX + 2.5}" y="${barY - 0.18}" text-anchor="middle" font-size="0.34">1cm参考</text>
+    <rect x="${barX}" y="${barY}" width="5" height="1" fill="none" stroke="${INK}" stroke-width="0.05"/>${divisions}
+    <text x="${barX + 5.5}" y="${barY + 0.62}" font-size="0.27">${escapeXml(TITLE)}</text>
+    <text x="${plan.pageWidth - PAGE_MARGIN_CM}" y="${barY + 0.62}" text-anchor="end" font-size="0.36" font-weight="600">${escapeXml(pieceLabel)}</text>`;
+}
 
-  const pdf = new jsPDF({
-    orientation: orientationFor(bodySize.widthCm, bodySize.heightCm),
-    unit: "cm",
-    format: [bodySize.widthCm, bodySize.heightCm],
-    compress: true,
-    putOnlyUsedFonts: true,
-    precision: 4,
+function a4PageSvg(piece, bounds, plan, tile) {
+  const dx = PAGE_MARGIN_CM + STROKE_SAFETY_CM - bounds.minX - tile.offsetX;
+  const dy = PAGE_MARGIN_CM + STROKE_SAFETY_CM - bounds.minY - tile.offsetY;
+  const clipId = `content-${tile.row}-${tile.column}`;
+  const paths = polygon(piece.outline, dx, dy) + openLines(piece.lines, dx, dy) + polygon(piece.seam, dx, dy, true);
+  return svgDocument(plan.pageWidth, plan.pageHeight, `
+    <defs><clipPath id="${clipId}"><rect x="${PAGE_MARGIN_CM}" y="${PAGE_MARGIN_CM}" width="${plan.contentWidth}" height="${plan.contentHeight}"/></clipPath></defs>
+    <g clip-path="url(#${clipId})">${paths}</g>${footerSvg(plan, piece.label)}`);
+}
+
+async function createA4Pdf(pieces) {
+  const prepared = pieces.map(piece => {
+    const bounds = boundsFor(piece);
+    return { piece, bounds, plan: createTilePlan(bounds.width + STROKE_SAFETY_CM * 2, bounds.height + STROKE_SAFETY_CM * 2) };
   });
+  let pdf;
+  for (const { piece, bounds, plan } of prepared) {
+    for (const tile of plan.tiles) {
+      const png = await renderSvgPage(a4PageSvg(piece, bounds, plan, tile), plan.pageWidth, plan.pageHeight);
+      if (!pdf) {
+        pdf = new jsPDF({ orientation: plan.orientation, unit: "cm", format: "a4", compress: true, precision: 4 });
+      } else {
+        pdf.addPage("a4", plan.orientation);
+      }
+      pdf.addImage(png, "PNG", 0, 0, plan.pageWidth, plan.pageHeight, undefined, "FAST");
+    }
+  }
+  return { blob: pdf.output("blob"), pageCount: pdf.getNumberOfPages(), plans: prepared.map(item => ({ label: item.piece.label, ...item.plan })) };
+}
 
-  // Pages 1-2: complete, unscaled, actual-size canvases.
-  pdf.addImage(bodyPng, "PNG", 0, 0, bodySize.widthCm, bodySize.heightCm, "body-pattern", "FAST");
-  pdf.addPage([sleeveSize.widthCm, sleeveSize.heightCm], orientationFor(sleeveSize.widthCm, sleeveSize.heightCm));
-  pdf.addImage(sleevePng, "PNG", 0, 0, sleeveSize.widthCm, sleeveSize.heightCm, "sleeve-pattern", "FAST");
+function createSinglePageLayout(pieces) {
+  const entries = pieces.map(piece => ({ piece, bounds: boundsFor(piece) }));
+  const piecesWidth = entries.reduce((sum, entry) => sum + entry.bounds.width, 0) + PIECE_GAP_CM * (entries.length - 1);
+  const piecesHeight = Math.max(...entries.map(entry => entry.bounds.height));
+  const width = Math.max(12, piecesWidth) + PAGE_MARGIN_CM * 2;
+  const calibrationY = PAGE_MARGIN_CM + piecesHeight + PIECE_GAP_CM;
+  const height = calibrationY + 10 + PAGE_MARGIN_CM;
+  let cursorX = PAGE_MARGIN_CM;
+  const patternSvg = entries.map(({ piece, bounds }) => {
+    const result = polygon(piece.outline, cursorX - bounds.minX, PAGE_MARGIN_CM - bounds.minY)
+      + openLines(piece.lines, cursorX - bounds.minX, PAGE_MARGIN_CM - bounds.minY)
+      + polygon(piece.seam, cursorX - bounds.minX, PAGE_MARGIN_CM - bounds.minY, true);
+    cursorX += bounds.width + PIECE_GAP_CM;
+    return result;
+  }).join("");
+  const calibrationSvg = `<rect x="${PAGE_MARGIN_CM}" y="${calibrationY}" width="10" height="10" fill="none" stroke="${INK}" stroke-width="0.08"/>`;
+  return { width, height, svg: svgDocument(width, height, patternSvg + calibrationSvg) };
+}
 
-  // Remaining pages: deterministic A4 tiles with a 1 cm shared overlap.
-  // for (const tile of bodyPlan.tiles) {
-  //   pdf.addPage("a4", "portrait");
-  //   pdf.addImage(bodyPng, "PNG", -tile.offsetX, -tile.offsetY, bodySize.widthCm, bodySize.heightCm, "body-pattern", "FAST");
-  // }
-  // for (const tile of sleevePlan.tiles) {
-  //   pdf.addPage("a4", "portrait");
-  //   pdf.addImage(sleevePng, "PNG", -tile.offsetX, -tile.offsetY, sleeveSize.widthCm, sleeveSize.heightCm, "sleeve-pattern", "FAST");
-  // }
+async function createSinglePagePdf(pieces) {
+  const page = createSinglePageLayout(pieces);
+  const png = await renderSvgPage(page.svg, page.width, page.height);
+  const pdf = new jsPDF({ orientation: page.width > page.height ? "landscape" : "portrait", unit: "cm", format: [page.width, page.height], compress: true, precision: 4 });
+  pdf.addImage(png, "PNG", 0, 0, page.width, page.height, undefined, "FAST");
+  return { blob: pdf.output("blob"), pageCount: 1, pageSize: { widthCm: page.width, heightCm: page.height } };
+}
 
-  return {
-    blob: pdf.output("blob"),
-    pageCount: pdf.getNumberOfPages(),
-    bodyPlan,
-    sleevePlan,
-  };
+export async function createPatternPdf({ pieces, mode = "a4" }) {
+  if (!Array.isArray(pieces) || pieces.length < 2) throw new Error("PDF export requires body and sleeve pieces");
+  if (mode === "a4" && pieces.length !== 3) throw new Error("A4 PDF export requires separate back, front and sleeve pieces");
+  return mode === "single" ? createSinglePagePdf(pieces) : createA4Pdf(pieces);
 }
 
 export function downloadPdfBlob(blob, filename) {
+  const safeFilename = filename.toLowerCase().endsWith(".pdf") ? filename : `${filename}.pdf`;
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
+  anchor.download = safeFilename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

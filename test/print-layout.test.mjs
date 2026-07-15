@@ -1,31 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { A4_HEIGHT_CM, A4_WIDTH_CM, createTilePlan } from "../src/print-layout.mjs";
+import { PAGE_MARGIN_CM, RULER_ZONE_HEIGHT_CM, createTilePlan, pageMetrics } from "../src/print-layout.mjs";
 
-test("A4 tile plan covers the complete source without gaps", () => {
-  const plan = createTilePlan(80, 72.3);
+test("A4 content area keeps 1 cm margins and an independent ruler zone", () => {
+  const portrait = pageMetrics("portrait");
+  assert.equal(portrait.contentWidth, 21 - PAGE_MARGIN_CM * 2);
+  assert.equal(portrait.contentHeight, 29.7 - PAGE_MARGIN_CM * 2 - RULER_ZONE_HEIGHT_CM);
 
-  assert.equal(plan.columns, 4);
-  assert.equal(plan.rows, 3);
-  assert.equal(plan.tiles.length, 12);
-  assert.ok(plan.coveredWidth >= plan.width);
-  assert.ok(plan.coveredHeight >= plan.height);
-  assert.equal(plan.tiles.at(-1).offsetX + A4_WIDTH_CM, plan.coveredWidth);
-  assert.equal(plan.tiles.at(-1).offsetY + A4_HEIGHT_CM, plan.coveredHeight);
-
-  for (let column = 1; column < plan.columns; column += 1) {
-    const previousRightEdge = plan.tiles[column - 1].offsetX + A4_WIDTH_CM;
-    assert.equal(previousRightEdge - plan.tiles[column].offsetX, 1);
-  }
-  for (let row = 1; row < plan.rows; row += 1) {
-    const previousBottomEdge = plan.tiles[(row - 1) * plan.columns].offsetY + A4_HEIGHT_CM;
-    assert.equal(previousBottomEdge - plan.tiles[row * plan.columns].offsetY, 1);
-  }
+  const landscape = pageMetrics("landscape");
+  assert.equal(landscape.contentWidth, 29.7 - PAGE_MARGIN_CM * 2);
+  assert.equal(landscape.contentHeight, 21 - PAGE_MARGIN_CM * 2 - RULER_ZONE_HEIGHT_CM);
 });
 
-test("small sources still produce one A4 tile", () => {
-  const plan = createTilePlan(10, 10);
-  assert.equal(plan.columns, 1);
-  assert.equal(plan.rows, 1);
-  assert.equal(plan.tiles.length, 1);
+test("each piece chooses the orientation with fewer A4 pages", () => {
+  const wide = createTilePlan(54, 15);
+  assert.equal(wide.orientation, "landscape");
+  assert.equal(wide.pageCount, 2);
+
+  const tall = createTilePlan(18, 50);
+  assert.equal(tall.orientation, "portrait");
+  assert.equal(tall.pageCount, 2);
+});
+
+test("tile offsets cover a piece without mixing page dimensions", () => {
+  const plan = createTilePlan(40, 50);
+  assert.equal(plan.tiles.length, plan.columns * plan.rows);
+  assert.ok(plan.columns * plan.contentWidth >= plan.width);
+  assert.ok(plan.rows * plan.contentHeight >= plan.height);
+  assert.equal(plan.tiles.at(-1).offsetX, (plan.columns - 1) * plan.contentWidth);
+  assert.equal(plan.tiles.at(-1).offsetY, (plan.rows - 1) * plan.contentHeight);
 });
